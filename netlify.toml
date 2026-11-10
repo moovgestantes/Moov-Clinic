@@ -1,0 +1,17 @@
+[build]
+command = "npm run build -- --require-supabase"
+publish = "dist"
+
+[build.environment]
+NODE_VERSION = "22"
+
+[[headers]]
+for = "/*"
+[headers.values]
+X-Content-Type-Options = "nosniff"
+Referrer-Policy = "no-referrer"
+X-Frame-Options = "DENY"
+Permissions-Policy = "camera=(), microphone=(self), geolocation=()"
+
+[functions]
+directory = "netlify/functions"

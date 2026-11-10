@@ -1,0 +1,85 @@
+.clinic-shell{min-height:100vh;display:flex;flex-direction:column}
+.clinic-shell main{max-width:1050px}
+.clinic-top{background:var(--navy);color:var(--sand);display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px clamp(14px,5vw,55px)}
+.clinic-top .account{color:var(--sand);flex-wrap:wrap;justify-content:flex-end}
+.clinic-brand{display:flex;align-items:center;gap:10px;padding:0;flex:none}
+.clinic-brand img{object-fit:contain}
+.clinic-brand .wordmark{font-size:1.5rem}
+.clinic-light{color:var(--sand);background:transparent;border-color:#ffffff40}
+.clinic-kicker{display:block;color:#795824;margin-bottom:6px}
+.pr-alta{background:#f8e7da;color:#883b24}
+.pr-media{background:#f4ead8;color:#73501e}
+.pr-baixa{background:#e8edf0;color:#324c5f}
+.task-detail{margin-top:16px}
+.task-notes{white-space:pre-wrap;margin-bottom:17px;overflow-wrap:anywhere}
+.modal-head h2{overflow-wrap:anywhere}
+.original{padding:10px;border:1px solid var(--line);border-radius:9px}
+.original summary{cursor:pointer;font-weight:650}
+.original-file{display:grid;gap:8px;margin-top:9px}
+.original-file img,.original-file canvas{display:block;width:100%;height:auto;object-fit:contain;background:white;border:1px solid var(--line)}
+.findings{display:grid;gap:10px}
+.finding .actions{justify-content:space-between}
+.modal-body h3{margin:0}
+.login .clinic-brand img{background:var(--navy);padding:4px;border-radius:8px}
+.login .clinic-brand .wordmark{margin:0}
+@media(max-width:440px){.clinic-top .account{font-size:.8rem}.clinic-brand .wordmark{font-size:1.2rem}.clinic-brand img{width:36px;height:36px}}
+.clinic-nav{padding:0 0 16px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+#patient-search input{width:min(420px,100%)}
+[data-record-status]{margin-top:6px}
+audio{max-width:100%}
+
+:root{
+  font-family:"Segoe UI Variable Text","Segoe UI",Aptos,system-ui,sans-serif;
+  font-size:16px;
+  color:#162e40;
+  background:#f7f7f4;
+  --white:#fff;
+  --line:#e2e6e7;
+  --muted:#536573;
+  font-synthesis:none;
+  text-rendering:optimizeLegibility;
+}
+.clinic-top{
+  min-height:76px;
+  padding:12px clamp(16px,5vw,56px);
+  border-bottom:2px solid #c9a86a;
+}
+.clinic-shell main{max-width:1140px;padding:28px clamp(16px,4vw,48px) 42px}
+.clinic-nav{margin-bottom:27px;padding-bottom:13px}
+.clinic-nav .selected{background:#e7eef2}
+h1{
+  font:650 clamp(1.85rem,4vw,2.7rem)/1.15 "Segoe UI Variable Display","Segoe UI",Aptos,system-ui,sans-serif;
+  letter-spacing:-.035em;
+}
+.page-title{margin-bottom:23px}
+.page-title p,.card-title p{font-size:.94rem;margin-top:7px}
+.card,.login section{border-radius:13px;box-shadow:0 4px 18px #0e2a3f08}
+.card{padding:17px clamp(14px,2.5vw,24px)}
+.card h2,.modal-head h2{font-size:1.18rem;letter-spacing:-.015em;font-weight:650}
+.row{padding:15px 0}
+.row-text strong{font-size:.96rem;font-weight:650}
+.row-text small,.hint{font-size:.86rem}
+button{min-height:40px;font-weight:600}
+button:disabled{cursor:default}
+button.checkbox{min-height:32px;width:32px}
+input,textarea,select{border-color:#cdd6dc;font-size:1rem;line-height:1.45;padding:10px 11px}
+textarea{min-height:112px}
+label{font-size:.88rem;font-weight:600}
+dialog{width:min(740px,calc(100% - 24px))}
+.modal-head{gap:12px}
+.modal-body{gap:16px}
+.recording-panel{background:#f8fafb;padding:14px;min-width:0}
+.recording-panel legend{padding:0 5px}
+.recording-panel audio{width:100%;max-width:450px}
+.recording-panel [data-record-status]{font-variant-numeric:tabular-nums;margin:0}
+[data-recording="true"] [data-record-status]{color:#0e2a3f;font-weight:650}
+[name="transcript"]{min-height:155px}
+.login{background:#f5efe6}
+.login h1{margin-top:20px}
+@media(max-width:520px){
+  .clinic-shell main{padding-top:16px}
+  .clinic-top{min-height:64px}
+  .clinic-nav{margin-bottom:20px}
+  .modal-head,.modal-foot,.modal-body{padding-inline:14px}
+  .recording-panel .actions button{min-height:44px}
+}

@@ -1,0 +1,23 @@
+{
+  "name": "moov-clinic",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/build.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "@tesseract.js-data/por": "^1.0.0",
+    "pdfjs-dist": "^5.4.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "vite": "^7.3.0"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
