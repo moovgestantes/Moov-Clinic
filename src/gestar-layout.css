@@ -192,3 +192,10 @@ dialog .primary,.login .primary{color:var(--clinic-cream)}
 .task-patient-results{display:grid;gap:2px;margin-top:4px;max-height:200px;overflow:auto}
 .task-patient-results button{text-align:left;justify-content:flex-start}
 .task-patient-results small{color:var(--clinic-muted);margin-left:8px}
+
+.task-tab-count{font-variant-numeric:tabular-nums;opacity:.82;margin-left:3px}
+
+.patient-task-group{margin-bottom:16px}
+.patient-task-entry>.task-section{margin:0 0 12px;padding:8px 0 0 40px;border-top:0}
+
+.checklist-editor-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-bottom:8px}

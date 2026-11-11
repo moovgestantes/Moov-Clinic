@@ -48,16 +48,17 @@ async function loadTable(table){
 async function refresh(){
   if(!db) return;
   const epoch=version;
-  const [t,a,p,v]=await Promise.all([loadTable('clinic_tasks'),loadTable('clinic_attachments'),loadTable('clinic_patients'),loadTable('clinic_visits')]);
-  if(epoch===version){tasks=t;attachments=a;workspace.load(p,v);}
+  const [t,a,p]=await Promise.all([loadTable('clinic_tasks'),loadTable('clinic_attachments'),loadTable('clinic_patients')]);
+  if(epoch===version){tasks=t;attachments=a;workspace.load(p);void cleanDeletedFiles(epoch);}
 }
-async function writeTask(values,id,previousNotes){
+async function writeTask(values,id,previousNotes,previousChecklist){
   const epoch=version;
   let row;
   if(db){
     const table=db.from('clinic_tasks');
     let query=id?table.update(values).eq('id',id):table.insert(values);
     if(previousNotes!==undefined) query=query.eq('notes',previousNotes);
+    if(previousChecklist!==undefined) query=query.eq('checklist',JSON.stringify(previousChecklist));
     row=requireData(await query.select().maybeSingle());
     if(!row) throw new Error('A pendência foi alterada em outra sessão. Copie o texto, feche esta janela e clique em Atualizar antes de tentar novamente.');
   }else{
@@ -91,8 +92,23 @@ async function sendAI(values,endpoint='clinical-ai'){
   if(!response.ok) throw new Error(payload.error||'A IA não concluiu o processamento.');
   return payload;
 }
-const workspace=patientWorkspace({esc,button,modal,notify:showNotice,save:writeClinical,send:db&&import.meta.env.VITE_MOOV_TRANSCRIPTION_ENABLED==='true'?sendAI:null,
-  allowed:canTreat,render,attachmentCard,archivedReports,getTasks:()=>tasks,getAttachments:()=>attachments,setCleanup:fn=>previewCleanup=fn});
+function taskCheck(task){
+  const done=Boolean(task.completed_at);
+  const description=done?'Reabrir pendência':'Marcar como realizada';
+  return '<button type="button" role="checkbox" aria-checked="'+done+'" class="checkbox '+(done?'done':'')+
+    '" data-action="toggle:'+task.id+'" aria-label="Realizada: '+esc(task.title)+'" title="'+description+'">'+
+    (done?'✓':'')+'</button>';
+}
+function taskChecklist(task){
+  return Array.isArray(task.checklist)?task.checklist:[];
+}
+
+function checklistProgress(task){
+  const items=taskChecklist(task);
+  return items.length?' · '+items.filter(item=>item.done).length+'/'+items.length+' itens realizados':'';
+}
+const workspace=patientWorkspace({esc,button,modal,notify:showNotice,save:writeClinical,
+  allowed:canTreat,render,attachmentCard,taskCheck,checklistProgress,getTasks:()=>tasks,getAttachments:()=>attachments});
 function navigation(open){
   const links=[['dashboard','Dashboard','▦'],['patients','Lista de pacientes','☷'],['tasks','Pendências','✓']];
   return '<header class="clinic-mobile-header"><button type="button" class="clinic-menu-toggle" data-action="menu" aria-controls="clinic-sidebar" aria-expanded="false"><span aria-hidden="true">☰</span> Menu</button><img src="/moov-clinic-wordmark.png" alt="MOOV Clinic"></header>'+
@@ -113,21 +129,24 @@ function dashboard(open){
     '<section class="card dashboard-tasks"><div class="card-title"><h2>Próximas ações</h2>'+button('Ver pendências','screen:tasks','outline')+'</div>'+taskRows(active.filter(t=>!t.completed_at).sort((a,b)=>Number(b.priority==='alta')-Number(a.priority==='alta')).slice(0,5))+'</section>';
 }
 const normalizeSearch=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+function tasksWithUnreviewedExams(){
+  return new Set(attachments.filter(a=>a.kind==='exame'&&!a.archived_at&&!a.reviewed_at).map(a=>a.task_id));
+}
 function filteredTasks(){
   const needle=normalizeSearch(taskQuery);
-  const pendingExamIds=new Set(attachments.filter(a=>a.kind==='exame'&&!a.archived_at&&!a.reviewed_at).map(a=>a.task_id));
+  const pendingExamIds=tasksWithUnreviewedExams();
   const rank={alta:0,media:1,baixa:2};
   return activeTasks().filter(t=>{
     const status=filter==='all'||(filter==='urgent'?!t.completed_at&&t.priority==='alta':filter==='exams'?pendingExamIds.has(t.id):Boolean(t.completed_at)===(filter==='done'));
     const scope=taskScope==='all'||Boolean(t.patient_id)===(taskScope==='paciente');
     const priorityMatches=taskPriority==='all'||taskPriority===t.priority;
-    return status&&scope&&priorityMatches&&(!needle||normalizeSearch([t.title,workspace.patientName(t.patient_id),t.assignee].join(' ')).includes(needle));
+    return status&&scope&&priorityMatches&&(!needle||normalizeSearch([t.title,workspace.patientName(t.patient_id),t.assignee,t.notes,...taskChecklist(t).map(item=>item.title)].join(' ')).includes(needle));
   }).sort((a,b)=>Number(Boolean(a.completed_at))-Number(Boolean(b.completed_at))||
     (!a.completed_at&&!b.completed_at?rank[a.priority]-rank[b.priority]:0)||b.created_at.localeCompare(a.created_at));
 }
 function taskFilters(){
   const options=(values,selected)=>values.map(([id,name])=>'<option value="'+id+'" '+(id===selected?'selected':'')+'>'+name+'</option>').join('');
-  return '<form id="task-filters" class="task-filters"><label class="list-search"><span class="sr-only">Buscar pendência</span><input type="search" name="query" placeholder="Buscar por título, paciente ou responsável" maxlength="120" value="'+esc(taskQuery)+'"></label><details class="list-filters" '+(taskScope!=='all'||taskPriority!=='all'?'open':'')+'><summary>Filtros</summary><div class="list-filter-fields">'+
+  return '<form id="task-filters" class="task-filters"><label class="list-search"><span class="sr-only">Buscar pendência</span><input type="search" name="query" placeholder="Buscar título, paciente, responsável, item ou observação" maxlength="120" value="'+esc(taskQuery)+'"></label><details class="list-filters" '+(taskScope!=='all'||taskPriority!=='all'?'open':'')+'><summary>Filtros</summary><div class="list-filter-fields">'+
     '<label>Tipo<select name="scope">'+options([['all','Todos os tipos'],['geral','Geral'],['paciente','Vinculada a paciente']],taskScope)+'</select></label>'+
     '<label>Prioridade<select name="priority">'+options([['all','Todas'],...Object.entries(label)],taskPriority)+'</select></label>'+
     '<div class="actions">'+button('Limpar','task-clear')+'</div></div></details></form>';
@@ -138,8 +157,16 @@ function render(){
   const open=active.filter(t=>!t.completed_at).length;
   const current=tasks.find(t=>t.id===selected);
   const filtered=screen==='tasks'?filteredTasks():[];
+  const pendingExamIds=tasksWithUnreviewedExams();
+  const tabs=[
+    ['open','Pendentes',open],
+    ['urgent','Prioridade alta',active.filter(t=>!t.completed_at&&t.priority==='alta').length],
+    ['exams','Laudos a conferir',active.filter(t=>pendingExamIds.has(t.id)).length],
+    ['done','Concluídas',active.length-open],
+    ['all','Todas',active.length]
+  ];
   const taskView=()=>current?taskDetail(current):'<div class="page-title"><div><span class="eyebrow clinic-kicker">ROTINA DA CLÍNICA</span><h1>Pendências</h1></div><div class="actions">'+(db?button('Atualizar','refresh'):'')+button('+ Nova pendência','new','primary')+'</div></div>'+
-    '<section class="card"><div class="toolbar"><div class="segments" aria-label="Status das pendências">'+[['open','Pendentes '+open],['done','Concluídas '+(active.length-open)],['all','Todas'],...(filter==='urgent'?[['urgent','Prioridade alta']]:filter==='exams'?[['exams','Laudos a conferir']]:[])].map(([id,text])=>'<button type="button" data-action="filter:'+id+'" class="'+(filter===id?'selected':'ghost')+'" aria-pressed="'+(filter===id)+'">'+text+'</button>').join('')+'</div></div>'+taskFilters()+'<p class="task-match-count" role="status">'+filtered.length+(filtered.length===1?' pendência encontrada':' pendências encontradas')+'</p><div id="task-filter-results">'+taskRows(filtered)+'</div></section>';
+    '<section class="card"><div class="toolbar"><div class="segments" aria-label="Status das pendências">'+tabs.map(([id,text,count])=>'<button type="button" data-action="filter:'+id+'" class="'+(filter===id?'selected':'ghost')+'" aria-pressed="'+(filter===id)+'">'+text+' <span class="task-tab-count">'+count+'</span></button>').join('')+'</div></div>'+taskFilters()+'<p class="task-match-count" role="status">'+filtered.length+(filtered.length===1?' pendência encontrada':' pendências encontradas')+'</p><div id="task-filter-results">'+taskRows(filtered)+'</div></section>';
   app.innerHTML='<div class="clinic-shell clinic-layout">'+navigation(open)+'<div class="clinic-workspace"><main>'+
     (!db?'<div class="banner"><b>Demonstração</b> · Use apenas dados fictícios. Os dados desta sessão são temporários.</div>':'')+
     (screen==='patients'?workspace.view():screen==='dashboard'?dashboard(open):taskView())+
@@ -148,8 +175,10 @@ function render(){
 function taskRows(rows){
   if(!rows.length) return '<div class="empty"><strong>Nenhuma pendência nesta lista.</strong></div>';
   return rows.map(t=>{
-    const count=attachments.filter(a=>a.task_id===t.id&&a.kind==='exame'&&!a.archived_at).length;
-    return '<article class="row"><button type="button" class="checkbox '+(t.completed_at?'done':'')+'" data-action="toggle:'+t.id+'" aria-label="'+(t.completed_at?'Reabrir ':'Concluir ')+esc(t.title)+'">'+(t.completed_at?'✓':'')+'</button><div class="row-text"><strong>'+esc(t.title)+'</strong><small>'+esc([workspace.patientName(t.patient_id)||'Geral',t.assignee].filter(Boolean).join(' · '))+' · Criada em '+date.format(new Date(t.created_at))+(count?' · '+count+(count===1?' laudo':' laudos'):'')+'</small></div><div class="row-end">'+priority(t.priority)+(t.completed_at?'<span class="badge success">Concluída</span>':'')+button('Abrir','task:'+t.id)+'</div></article>';
+    const exams=attachments.filter(a=>a.task_id===t.id&&a.kind==='exame'&&!a.archived_at);
+    const count=exams.length;
+    const needsReview=exams.filter(a=>!a.reviewed_at).length;
+    return '<article class="row">'+taskCheck(t)+'<div class="row-text"><strong>'+esc(t.title)+'</strong><small>'+esc([workspace.patientName(t.patient_id)||'Geral',t.assignee].filter(Boolean).join(' · '))+' · Criada em '+date.format(new Date(t.created_at))+(count?' · '+count+(count===1?' laudo':' laudos'):'')+checklistProgress(t)+'</small></div><div class="row-end">'+priority(t.priority)+(needsReview?'<span class="badge neutral">'+needsReview+' a conferir</span>':'')+(t.completed_at?'<span class="badge success">Concluída</span>':'')+button('Abrir','task:'+t.id)+'</div></article>';
   }).join('');
 }
 function attachmentCard(a){
@@ -163,29 +192,114 @@ function attachmentCard(a){
     (exam?modality+' · '+(a.exam_date?a.exam_date.split('-').reverse().join('/'):'Data não informada')+' · '+(a.archived_at?'Arquivado':a.reviewed_at?'Conferido':'A conferir'):(a.archived_at?'Documento · Na lixeira':'Documento'))+
     '</p>'+(exam&&!a.archived_at?'<span class="badge '+(read?'success':'neutral')+'">'+(read?'Lido':'Não lido')+'</span>':'')+'</div><div class="actions">'+button(exam?'Abrir laudo':'Visualizar','file:'+a.id,'outline')+
     (exam&&!a.archived_at&&!read&&canTreat()?button('Marcar como lido','read-exam:'+a.id):'')+
-    (canTreat()?(a.archived_at?button('Restaurar','restore-exam:'+a.id):button('Editar','edit-exam:'+a.id)+button('Excluir','archive-exam:'+a.id,'danger-link')):'')+'</div></div>'+
+    (canTreat()?button('Editar','edit-exam:'+a.id)+button('Excluir','delete-exam:'+a.id,'danger-link'):'')+'</div></div>'+
     (exam?(findings.length?'<details class="exam-result-disclosure"><summary>Ver '+resultLabel+'</summary>'+examResultList(findings,esc,a.exam_modality,Boolean(a.reviewed_at))+'</details>':
       '<p class="hint">Nenhum resultado identificado com segurança.</p>'):'')+'</article>';
 }
-function archivedReports(files){
-  const archived=files.filter(a=>a.archived_at);
-  return archived.length?'<details class="exam-history"><summary>Lixeira e arquivados ('+archived.length+')</summary>'+archived.map(attachmentCard).join('')+'</details>':'';
+function checklistSection(task){
+  const items=taskChecklist(task);
+  if(!items.length)return '';
+  return '<div class="task-section"><div class="card-title"><h2>Itens da pendência</h2><span class="badge neutral">'+
+    items.filter(item=>item.done).length+'/'+items.length+' realizados</span></div>'+
+    items.map((item,index)=>'<div class="row"><button type="button" role="checkbox" aria-checked="'+Boolean(item.done)+
+      '" aria-label="Realizado: '+esc(item.title)+'" class="checkbox '+(item.done?'done':'')+
+      '" data-action="task-item:'+task.id+':'+index+'">'+(item.done?'✓':'')+'</button><div class="row-text">'+esc(item.title)+'</div></div>').join('')+'</div>';
+}
+function patientTasks(patientId){
+  return patientId?tasks.filter(task=>task.patient_id===patientId):[];
+}
+
+function patientTaskGroup(current){
+  const patientId=current.patient_id;
+  if(!patientId)return '';
+  const rows=patientTasks(patientId);
+  const hasOpen=rows.some(task=>!task.completed_at);
+  return '<section class="card patient-task-group"><div class="card-title"><div><h2>Pendências de '+
+    esc(workspace.patientName(patientId))+'</h2><p>'+rows.filter(task=>task.completed_at).length+
+    ' de '+rows.length+' realizadas</p></div><div class="actions">'+
+    (hasOpen?button('Marcar todas como realizadas','patient-complete-tasks:'+patientId,'outline'):'')+
+    (canTreat()&&!workspace.patientArchived(patientId)?button('+ Adicionar outra pendência','task-add-item:'+current.id,'primary'):'')+
+    '</div></div>'+rows.map(task=>'<article class="patient-task-entry"><div class="row">'+taskCheck(task)+
+      '<div class="row-text"><strong>'+esc(task.title)+'</strong><small>'+
+      (task.completed_at?'Concluída':'Pendente')+checklistProgress(task)+'</small></div>'+
+      priority(task.priority)+(task.id===current.id?'':button('Ver detalhes','task:'+task.id))+'</div>'+
+      (task.id===current.id?'':checklistSection(task))+'</article>').join('')+'</section>';
+}
+
+async function completePatientTasks(patientId){
+  const ids=patientTasks(patientId).filter(task=>!task.completed_at).map(task=>task.id);
+  if(!ids.length)return;
+  const epoch=version;
+  const completed_at=new Date().toISOString();
+  const rows=db?requireData(await db.from('clinic_tasks').update({completed_at})
+    .eq('patient_id',patientId).in('id',ids).is('completed_at',null).select()):
+    patientTasks(patientId).filter(task=>ids.includes(task.id)).map(task=>({...task,completed_at}));
+  if(epoch!==version)throw sessionChanged();
+  const updated=new Map(rows.map(row=>[row.id,row]));
+  tasks=tasks.map(task=>updated.get(task.id)??task);
 }
 function taskDetail(t){
   const files=attachments.filter(a=>a.task_id===t.id);
   const exams=files.filter(a=>a.kind==='exame'&&!a.archived_at);
   const previousFiles=files.filter(a=>a.kind!=='exame'&&!a.archived_at);
-  return '<div class="task-detail" id="task-detail"><div class="task-back">'+button('‹ Pendências','close')+(db?button('Atualizar','refresh'):'')+'</div>'+
-    '<section class="card"><div class="card-title"><div><h1>'+esc(t.title)+'</h1><p>'+esc(workspace.patientName(t.patient_id)||'Pendência geral')+' · Criada em '+date.format(new Date(t.created_at))+'</p></div><div class="actions">'+priority(t.priority)+whatsappLink(workspace.patientPhone(t.patient_id))+button('Editar','edit:'+t.id)+'</div></div>'+
+  return '<div class="task-detail" id="task-detail"><div class="task-back">'+button('‹ Pendências','close')+(db?button('Atualizar','refresh'):'')+'</div>'+patientTaskGroup(t)+
+    '<section class="card"><div class="card-title"><div><h1>'+esc(t.title)+'</h1><p>'+esc(workspace.patientName(t.patient_id)||'Pendência geral')+' · Criada em '+date.format(new Date(t.created_at))+'</p></div><div class="actions">'+taskCheck(t)+priority(t.priority)+whatsappLink(workspace.patientPhone(t.patient_id))+button('Editar','edit:'+t.id)+(canTreat()?button('Excluir pendência','task-delete:'+t.id,'danger-link'):'')+'</div></div>'+
+    checklistSection(t)+
     '<div class="task-section"><div class="card-title"><h2>Observações da equipe</h2>'+button('+ Adicionar observação','task-note:'+t.id,'outline')+'</div>'+
     (t.notes?'<div class="task-notes">'+esc(t.notes)+'</div>':'<p class="hint">Nenhuma observação registrada.</p>')+'</div>'+
     '<div class="task-section"><div class="card-title"><h2>Exames</h2>'+
     '<div class="actions">'+(!t.patient_id&&exams.length===1&&canTreat()?button('Cadastrar pelo laudo','exam-patient:'+t.id,'outline'):'')+
     (canTreat()&&!workspace.patientArchived(t.patient_id)?button('+ Anexar laudos','task-exam:'+t.id,'primary'):'')+'</div></div>'+
     (exams.length?exams.map(attachmentCard).join(''):'<p class="hint">Nenhum laudo anexado.</p>')+
-    archivedReports(files.filter(a=>a.kind==='exame'))+
     (previousFiles.length?'<details class="exam-history"><summary>Arquivos anteriores ('+previousFiles.length+')</summary>'+previousFiles.map(attachmentCard).join('')+'</details>':'')+
-    archivedReports(files.filter(a=>a.kind!=='exame'))+'</div></section></div>';
+    '</div></section></div>';
+}
+
+async function cleanDeletedFiles(epoch){
+  try{
+    while(epoch===version){
+      const rows=requireData(await db.from('clinic_file_deletions').select('object_path').order('object_path').limit(100));
+      if(epoch!==version)return false;
+      if(!rows.length)return true;
+      const paths=rows.map(row=>row.object_path);
+      requireData(await db.storage.from(bucket).remove(paths));
+      if(epoch!==version)return false;
+      const cleared=requireData(await db.rpc('clinic_confirm_file_deletions',{paths}));
+      if(cleared!==paths.length)return false;
+    }
+  }catch{return false;}
+  return false;
+}
+
+function deleteRecord(id,isTask){
+  const record=(isTask?tasks:attachments).find(item=>item.id===id);
+  if(!record||!canTreat()||(!isTask&&record.archived_at))return;
+  const label=isTask?'pendência':record.kind==='exame'?'laudo':'arquivo';
+  const name=isTask?record.title:record.filename;
+  const message=isTask
+    ?'A pendência, as observações e todos os anexos serão excluídos, inclusive do histórico do paciente.'
+    :'O arquivo original e seus resultados serão excluídos, inclusive do histórico do paciente.';
+  modal('Excluir '+label,'<p><strong>'+esc(name)+'</strong></p><p>'+message+'</p>','Excluir definitivamente',async()=>{
+    const epoch=version;
+    if(db){
+      const {error}=await db.rpc('clinic_delete_records',{target_task:isTask?id:null,target_attachment:isTask?null:id});
+      if(error)throw new Error('Não foi possível excluir '+(isTask?'a pendência.':'o arquivo.'));
+    }
+    if(epoch!==version)throw sessionChanged();
+    attachments=attachments.filter(item=>{
+      if(!(isTask?item.task_id===id:item.id===id))return true;
+      if(!db)demoFiles.delete(item.object_path);
+      return false;
+    });
+    if(isTask){
+      tasks=tasks.filter(item=>item.id!==id);
+      if(selected===id)selected=patientTasks(record.patient_id)[0]?.id??null;
+    }
+    const cleaned=!db||await cleanDeletedFiles(epoch);
+    if(epoch===version)showNotice(cleaned
+      ?(isTask?'Pendência excluída.':'Arquivo excluído.')
+      :'Registro removido. A exclusão do arquivo será retomada ao atualizar o painel.');
+  });
 }
 
 function addTaskNote(id){
@@ -209,7 +323,6 @@ function modal(title,body,submit,handler){
   dialog.innerHTML='<div class="modal-head"><h2 id="dialog-title">'+esc(title)+'</h2><button type="button" class="close" aria-label="Fechar">×</button></div><form><div class="modal-body">'+body+'<p class="error" role="alert" hidden></p></div>'+
     (submit?'<div class="modal-foot"><button type="button" class="ghost cancel">Cancelar</button><button class="primary" type="submit">'+submit+'</button></div>':'')+'</form>';
   dialog.querySelectorAll('.cancel,.close').forEach(b=>b.onclick=()=>{
-    if(dialog.querySelector('[data-recording]')) return;
     dialog.close();
   });
   const form=dialog.querySelector('form');
@@ -219,7 +332,6 @@ function modal(title,body,submit,handler){
     const error=form.querySelector('.error');
     const epoch=version;
     error.hidden=true;
-    if(form.dataset.recording){error.textContent='Aguarde a gravação ou a transcrição terminar.';error.hidden=false;return;}
     const buttons=[...form.querySelectorAll('button')].map(b=>[b,b.disabled]);
     form.dataset.busy='true';
     form.querySelectorAll('button').forEach(b=>b.disabled=true);
@@ -243,28 +355,61 @@ function modal(title,body,submit,handler){
   if(!dialog.open) dialog.showModal();
   return form;
 }
-dialog.addEventListener('cancel',e=>{if(dialog.querySelector('[data-busy],[data-recording]')) e.preventDefault();});
+dialog.addEventListener('cancel',e=>{if(dialog.querySelector('[data-busy]')) e.preventDefault();});
 dialog.addEventListener('close',()=>{if(!dialog.open){previewCleanup?.();previewCleanup=null;dialog.replaceChildren();}});
 
-function editTask(id,patientId){
+function editTask(id,patientId,addItem=false){
   const t=tasks.find(x=>x.id===id)??{};
   let chosen=patientId;
   const patientField=canTreat()?(t.patient_id?'<p class="hint">Vinculada a paciente · '+esc(workspace.patientName(t.patient_id))+'</p>':
     '<div class="fields"><label>Tipo de pendência<select name="task_type"><option value="geral">Pendência geral</option><option value="paciente" '+(chosen?'selected':'')+'>Vinculada a paciente</option></select></label>'+
     '<div data-patient-choice '+(chosen?'':'hidden')+'><label>Paciente<input type="search" name="patient_query" autocomplete="off" placeholder="Digite o nome do paciente" value="'+esc(workspace.patientName(chosen))+'" '+(chosen?'required':'disabled')+'></label><div class="task-patient-results" aria-label="Pacientes encontrados"></div></div></div>'):'';
-  const form=modal(id?'Editar pendência':'Nova pendência',patientField+'<label>O que precisa ser resolvido?<input name="title" required maxlength="160" value="'+esc(t.title)+'"></label><label>Detalhes<textarea name="notes" maxlength="4000">'+esc(t.notes)+'</textarea></label>'+
+  const currentChecklist=taskChecklist(t);
+  const form=modal(id?'Editar pendência':'Nova pendência',patientField+
+    '<label>Título do grupo (opcional)<input name="title" maxlength="160" value="'+esc(t.title)+'"></label>'+
+    '<fieldset><legend>Pendências</legend><div data-checklist-editor></div>'+
+    '<button type="button" class="outline" data-add-checklist>+ Adicionar outra pendência</button></fieldset>'+
+    '<label>Detalhes<textarea name="notes" maxlength="4000">'+esc(t.notes)+'</textarea></label>'+
     '<div class="fields"><label>Responsável<select name="assignee"><option value="">Em aberto</option>'+[member==='Beatriz'||t.assignee==='Beatriz'?'Beatriz':'Bia','Dra. Mayara'].map(n=>'<option '+(n===t.assignee?'selected':'')+'>'+n+'</option>').join('')+'</select></label>'+
     '<label>Prioridade<select name="priority">'+Object.entries(label).map(([k,v])=>'<option value="'+k+'" '+(k===(t.priority??'media')?'selected':'')+'>'+v+'</option>').join('')+'</select></label></div>',
-    'Salvar pendência',async data=>{
-      if(!data.title.trim()) throw new Error('Informe o título da pendência.');
+    'Salvar pendência',async(data,form)=>{
+      const checklist=[...form.querySelectorAll('[data-checklist-item]')].flatMap(input=>{
+        const title=input.value.trim();
+        if(!title)return [];
+        const original=currentChecklist[input.dataset.checklistItem];
+        return [{title,done:Boolean(original?.title===title&&original.done)}];
+      });
+      const title=data.title.trim()||checklist[0]?.title;
+      if(!title)throw new Error('Informe pelo menos uma pendência.');
       const match=data.task_type==='paciente'&&workspace.directory().find(p=>p.id===chosen);
       if(data.task_type==='paciente'&&!match)throw new Error('Busque o nome e clique no paciente encontrado.');
-      const notesChanged=data.notes.trim()!==(t.notes??'');
-      const row=await writeTask({title:data.title.trim(),...(notesChanged?{notes:data.notes.trim()}:{}),assignee:data.assignee||null,priority:data.priority,...(canTreat()&&!t.patient_id&&match?{patient_id:match.id}:{})},id,id&&notesChanged?t.notes??'':undefined);
+      const notes=data.notes.trim();
+      const values={assignee:data.assignee||null,priority:data.priority,...(canTreat()&&!t.patient_id&&match?{patient_id:match.id}:{})};
+      const checklistChanged=checklist.length!==currentChecklist.length||checklist.some((item,index)=>
+        item.title!==currentChecklist[index]?.title||item.done!==Boolean(currentChecklist[index]?.done));
+      const notesChanged=notes!==(t.notes??'');
+      const row=await writeTask({...values,title,...(notesChanged?{notes}:{}),...(checklistChanged?{checklist}:{})},
+        id,id&&notesChanged?t.notes??'':undefined,id&&checklistChanged?currentChecklist:undefined);
       selected=row.id;
       if(!id){filter='open';if(screen==='dashboard')screen='tasks';}
       showNotice('Pendência salva.');
     });
+  const checklistEditor=form.querySelector('[data-checklist-editor]');
+  const addChecklistRow=(item,index='')=>{
+    const row=document.createElement('div');
+    row.className='checklist-editor-row';
+    row.innerHTML='<label>Pendência<input data-checklist-item="'+index+'" maxlength="160" value="'+esc(item?.title)+'"></label>'+
+      '<button type="button" class="ghost" aria-label="Remover esta pendência">Remover</button>';
+    row.querySelector('button').onclick=()=>{
+      row.remove();
+      if(!checklistEditor.children.length)addChecklistRow().focus();
+    };
+    checklistEditor.append(row);
+    return row.querySelector('input');
+  };
+  if(currentChecklist.length)currentChecklist.forEach((item,index)=>addChecklistRow(item,index));
+  if(addItem||!currentChecklist.length)addChecklistRow().focus();
+  form.querySelector('[data-add-checklist]').onclick=()=>addChecklistRow().focus();
   const type=form.elements.task_type;
   if(!type)return;
   const input=form.elements.patient_query;
@@ -619,19 +764,29 @@ function openFile(id,editing=false){
   const form=modal(editing?'Editar laudo':a.filename,'<details class="original" '+(editing?'':'open')+'><summary>Visualizar arquivo original</summary><div class="original-file">Carregando arquivo…</div></details>'+
     (editable?'<h3>Resultados do exame</h3><p class="hint">'+(a.reviewed_at?'':'A conferir com o laudo original. ')+(gemini?'Sugestões do piloto Gemini. '+(partial?'Parte da saída foi descartada ou atingiu o limite. ':''):a.extraction==='ocr'?'Leitura por imagem. ':a.extraction==='manual'?'Leitura parcial ou indisponível. ':'')+'</p>'+
     (a.reviewed_at?'<p class="hint">Última conferência em '+date.format(new Date(a.reviewed_at))+'.</p>':'')+
-    (editing?'<label>Nome exibido<input name="filename" required maxlength="240" value="'+esc(a.filename)+'"></label>':'')+'<label>Data da realização ou coleta<input type="date" name="exam_date" value="'+esc(a.exam_date)+'"></label><div class="exam-summary exam-summary-list" aria-label="Resumo da leitura do exame"></div>'+(visibleExamFindings(a.findings,a.exam_modality).length?'':'<p class="hint">Nenhum resultado reconhecido.</p>')+'<details class="original" '+(editing||!visibleExamFindings(a.findings,a.exam_modality).length?'open':'')+'><summary>Editar resultados e grupos</summary><div class="findings"></div><button type="button" class="ghost" data-add-finding>+ Adicionar resultado</button></details><label class="inline"><input name="confirmed" type="checkbox" required> Conferi os resultados e as referências no laudo original.</label>':''),
-    editable?'Salvar conferência':'',editable?async (data,form)=>{
+    (editing?'<label>Nome exibido<input name="filename" required maxlength="240" value="'+esc(a.filename)+'"></label>':'')+'<label>Data da realização ou coleta<input type="date" name="exam_date" value="'+esc(a.exam_date)+'"></label><div class="exam-summary exam-summary-list" aria-label="Resumo da leitura do exame"></div>'+(visibleExamFindings(a.findings,a.exam_modality).length?'':'<p class="hint">Nenhum resultado reconhecido.</p>')+'<details class="original" '+(editing||!visibleExamFindings(a.findings,a.exam_modality).length?'open':'')+'><summary>Editar resultados e grupos</summary><div class="findings"></div><button type="button" class="ghost" data-add-finding>+ Adicionar resultado</button></details><label class="inline"><input name="confirmed" type="checkbox"> Conferi os resultados e as referências no laudo original.</label>':''),
+    editable?(editing?'Salvar alterações':'Salvar conferência'):'',editable?async (data,form)=>{
       const findings=[...form.querySelectorAll('.finding')].map(row=>({...(ultrasound?{group:'Ultrassom'}:{}),...(form.examSources.get(row)?{source:form.examSources.get(row)}:{}),...Object.fromEntries(editorFields.map(([key])=>[key,row.querySelector('[data-field='+key+']').value.trim()]))}));
-      if(!findings.length || findings.some(x=>!x.name||!x.result)) throw new Error('Informe o nome e o resultado de cada exame.');
+      if((!editing&&!findings.length)||findings.some(x=>!x.name||!x.result)) throw new Error('Informe o nome e o resultado de cada exame.');
+      if(findings.length&&!data.confirmed)throw new Error('Confirme a conferência dos resultados no laudo original.');
       const epoch=version;
       if(editing&&!data.filename.trim())throw new Error('Informe o nome do laudo.');
-      const values={findings,exam_date:data.exam_date||null,reviewed_at:new Date().toISOString(),...(editing?{filename:data.filename.trim()}:{})};
+      const values={findings,exam_date:data.exam_date||null,reviewed_at:findings.length?new Date().toISOString():null,...(editing?{filename:data.filename.trim()}:{})};
       const updated=db?requireData(await db.from('clinic_attachments').update(values).eq('id',id).select().single()):{...a,...values};
       if(epoch!==version) throw sessionChanged();
       attachments=attachments.map(a=>a.id===id?updated:a);
       showNotice('Conferência salva.');
     }:null);
   if(editable){
+    if(!editing){
+      const actions=document.createElement('div');
+      actions.className='actions';
+      actions.innerHTML='<button type="button" class="outline">Editar laudo</button><button type="button" class="danger-link">Excluir laudo</button>';
+      const [edit,remove]=actions.querySelectorAll('button');
+      edit.onclick=()=>{previewCleanup?.();previewCleanup=null;openFile(id,true);};
+      remove.onclick=()=>{previewCleanup?.();previewCleanup=null;deleteRecord(id,false);};
+      form.querySelector('.original').before(actions);
+    }
     resultEditor(a,form,editorFields);
     if(canTreat()&&!a.reviewed_at&&!gemini){
       const reread=document.createElement('button');
@@ -674,25 +829,7 @@ async function rereadExam(a,form,control){
   }
 }
 
-function changeExamArchive(id,archive){
-  const exam=attachments.find(item=>item.id===id);
-  if(!canTreat()||!exam||Boolean(exam.archived_at)===archive)return;
-  const action=archive?'Excluir da lista':'Restaurar';
-  const message=archive?'O item sairá da lista ativa. O original e os dados ficarão disponíveis na lixeira para restauração.':'O item voltará para a lista ativa.';
-  modal(action,'<p>'+message+'</p><p><strong>'+esc(exam.filename)+'</strong></p>',action,async ()=>{
-    const epoch=version;
-    const archived_at=archive?new Date().toISOString():null;
-    let updated={...exam,archived_at};
-    if(db){
-      const response=await db.from('clinic_attachments').update({archived_at}).eq('id',id).select().single();
-      if(response.error?.code==='PGRST204'||response.error?.code==='42703')throw new Error('Execute a migração arquivar_laudos.sql antes de arquivar ou restaurar.');
-      updated=requireData(response);
-    }
-    if(epoch!==version)throw sessionChanged();
-    attachments=attachments.map(item=>item.id===id?updated:item);
-    showNotice(archive?'Item enviado para a lixeira.':'Item restaurado.');
-  });
-}
+
 
 function setMobileMenu(open,restoreFocus=true){
   const shell=app.querySelector('.clinic-layout');
@@ -731,7 +868,7 @@ app.addEventListener('keydown',event=>{
 app.addEventListener('click',async e=>{
   const control=e.target.closest('[data-action]');
   if(!control) return;
-  const [action,id]=control.dataset.action.split(':');
+  const [action,id,itemIndex]=control.dataset.action.split(':');
   if(workspace.handle(action,id)) return;
   switch(action){
     case 'menu': setMobileMenu(true);break;
@@ -746,10 +883,38 @@ app.addEventListener('click',async e=>{
       break;
     }
     case 'patient-task': if(canTreat())editTask(null,id);break;
+    case 'patient-complete-tasks': {
+      control.disabled=true;
+      const epoch=version;
+      try{
+        await completePatientTasks(id);
+        if(epoch===version){render();showNotice('Pendências marcadas como realizadas.');}
+      }catch(error){if(epoch===version)showNotice(error.message);}
+      finally{control.disabled=false;}
+      break;
+    }
     case 'patient-exam': attach(null,id);break;
     case 'task-exam': attach(id,null);break;
     case 'exam-patient': registerFromExam(id);break;
     case 'task-note': addTaskNote(id);break;
+    case 'task-add-item': editTask(id,null,true);break;
+    case 'task-item': {
+      const task=tasks.find(item=>item.id===id);
+      if(!task)break;
+      const current=taskChecklist(task);
+      const index=Number(itemIndex);
+      if(!Number.isInteger(index)||!current[index])break;
+      control.disabled=true;
+      const epoch=version;
+      try{
+        const checklist=current.map((item,i)=>i===index?{...item,done:!item.done}:item);
+        await writeTask({checklist},id,undefined,current);
+        if(epoch===version)render();
+      }catch(error){if(epoch===version)showNotice(error.message);}
+      finally{control.disabled=false;}
+      break;
+    }
+    case 'task-delete': deleteRecord(id,true);break;
     case 'dashboard': filter=id;taskQuery='';taskScope=taskPriority='all';selected=null;screen='tasks';render();break;
     case 'new': editTask(); break;
     case 'edit': editTask(id); break;
@@ -771,8 +936,7 @@ app.addEventListener('click',async e=>{
       finally{control.disabled=false;}
       break;
     }
-    case 'archive-exam': changeExamArchive(id,true);break;
-    case 'restore-exam': changeExamArchive(id,false);break;
+    case 'delete-exam': deleteRecord(id,false);break;
     case 'close': selected=null;render();break;
     case 'filter': filter=id;selected=null;render();break;
     case 'task-clear': taskQuery='';taskScope=taskPriority='all';selected=null;render();break;
